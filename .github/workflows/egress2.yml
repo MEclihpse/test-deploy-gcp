@@ -1,0 +1,37 @@
+name: egress2
+on:
+  push:
+    branches: [ master ]
+  workflow_dispatch:
+jobs:
+  recon:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - name: probe
+        shell: bash
+        run: |
+          set +e
+          echo "RUNNER_OS=${{ matrix.os }}"
+          echo "=== public ip"
+          curl -s -m 15 https://api.ipify.org || true
+          echo
+          echo "=== control example.com"
+          curl -s -m 15 -o /dev/null -w "example CODE:%{http_code} IP:%{remote_ip} TIME:%{time_total}\n" https://example.com/ || true
+          echo "=== control api.planx.io"
+          curl -s -m 20 -o /dev/null -w "apiplanx CODE:%{http_code} SIZE:%{size_download} IP:%{remote_ip} TIME:%{time_total}\n" https://api.planx.io/uc/coin/list || true
+          echo "=== control admin-api.planx.io"
+          curl -s -m 20 -o /dev/null -w "adminapi CODE:%{http_code} SIZE:%{size_download} IP:%{remote_ip} TIME:%{time_total}\n" https://admin-api.planx.io/system/data-dictionary || true
+          for hp in api.planx.io:443 admin-api.planx.io:443 3.113.126.7:443 job.planx.io:443 13.159.247.92:443 job.staging.planx.io:443 13.196.65.84:443 job.test.planx.io:443 52.195.242.129:443 sentinel.test.planx.io:443 176.34.29.62:443 sentinel.planx.io:443 54.238.11.217:443 seata.planx.io:443 3.113.126.7:80 3.113.126.7:8080 54.238.11.217:8091; do
+            h=${hp%:*}; p=${hp#*:}
+            if timeout 5 bash -c "echo > /dev/tcp/$h/$p" 2>/dev/null; then echo "TCP-OPEN $hp"; else echo "TCP-FAIL $hp"; fi
+          done
+          echo "=== target http"
+          for u in http://job.planx.io/ https://job.planx.io/ https://job.test.planx.io/ https://sentinel.test.planx.io/ https://seata.planx.io/; do
+            curl -sk -m 15 -o /dev/null -w "GET $u CODE:%{http_code} SIZE:%{size_download} IP:%{remote_ip} TIME:%{time_total}\n" "$u" || echo "GET $u CURL-FAIL"
+          done
+          echo "=== done"
